@@ -85,12 +85,16 @@ def generate_dataset(
             if is_char:
                 # One-hot encode the input character.
                 input_sequences[vocab_to_index[words_or_text[i+t]], i, t] = 1
+
             else:
                 # Use the dense word vector as the input feature.
                 input_sequences[:, i, t] = word_vectors[words_or_text[i+t]]
             # Targets are always one-hot over the vocabulary, in both modes.
             output_sequences[vocab_to_index[words_or_text[i+t+1]], i, t] = 1
 
+    print(f"Generated {m} training sequences of length {T_x} from a corpus of "
+          f"{len(words_or_text)} tokens, with a vocabulary of {len(vocabs)} unique "
+          f"{'characters' if is_char else 'words'}.")
     return input_sequences, output_sequences, vocab_to_index, index_to_vocab
 
 
@@ -152,6 +156,7 @@ def generate(model, embedding, decoder, seed_word, num_words=50, is_char=False, 
             idx = np.argmax(y_pred)
         word = decoder[int(idx)]
         result.append(word)
+        
         if is_char:
             x = np.zeros((model.n_x, 1))          # one-hot vector for input character
             x[embedding[word], 0] = 1
