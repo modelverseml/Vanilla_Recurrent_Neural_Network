@@ -33,7 +33,7 @@ class RNN:
         self.task = task
         self.n_x = X.shape[0]                # input feature size
         self.n_y = Y.shape[0]                # output feature size
-        # Weights and biases, created once and updated in place during training.
+
         self.parameters = self.initialize_parameters()
 
     def initialize_parameters(self):
@@ -81,9 +81,11 @@ class RNN:
         z = np.dot(Wya, a_next) + by
         yt_pred = self.softmax(z) if self.task == "classification" else z
 
-        return a_next, yt_pred
+        cache = (a_prev, a_next, xt)
 
-    def rnn_forward(self, X):
+        return cache, a_next, yt_pred
+
+    def rnn_forward(self, X, a0):
         """Run the forward pass over the whole sequence.
 
         Args:
@@ -94,21 +96,25 @@ class RNN:
         """
         Wya = self.parameters["Wya"]
 
+        caches = []
+
         n_x, m, T_x = X.shape
         n_y, n_a = Wya.shape
 
-        a_next = np.zeros((n_a, m))            # initial hidden state a<0> = 0
+        a_next = a0                             # initial hidden state a<0> = 0
         a = np.zeros((n_a, m, T_x))            # store hidden states for backprop
         y_pred = np.zeros((n_y, m, T_x))       # store predictions
 
         # Step through time, feeding each step's hidden state into the next.
         for t in range(T_x):
             xt = X[:, :, t]
-            a_next, yt_pred = self.rnn_cell_forward(xt, a_next)
+            cache, a_next, yt_pred = self.rnn_cell_forward(xt, a_next)
             a[:, :, t] = a_next
             y_pred[:, :, t] = yt_pred
+            caches.append(cache)
 
-        return a, y_pred
+        caches = (caches, X)
+        return caches, a, y_pred
 
     def compute_loss(self, y_pred, Y):
         """Loss between predictions and targets, matched to the task.
@@ -127,34 +133,27 @@ class RNN:
         # regression: mean squared error (the 1/2 makes the gradient exactly y_pred - Y)
         return 0.5 * np.sum((y_pred - Y) ** 2) / m
 
-    def rnn_cell_backward(self, dy, da_next, xt, a_t, a_prev):
+    def rnn_cell_backward(self, da_next, cache):
         """Backprop through one time step.
 
         Args:
-            dy      : output-space gradient at this step (y_pred - Y), shape (n_y, m)
-            da_next : hidden-state gradient flowing back from the *next* time step,
-                      shape (n_a, m)
-            xt      : input at this step,        shape (n_x, m)
-            a_t     : hidden state at this step,  shape (n_a, m)
-            a_prev  : hidden state from the previous step, shape (n_a, m)
+            da_next : total hidden-state gradient at this step. It is the gradient
+                      coming from this step's output plus the gradient flowing back
+                      from the *next* time step, shape (n_a, m).
+            cache   : (a_prev, a_next, xt) saved during the forward pass:
+                        a_prev : hidden state from the previous step, (n_a, m)
+                        a_next : hidden state at this step,            (n_a, m)
+                        xt     : input at this step,                   (n_x, m)
         Returns:
             gradients dict with this step's parameter grads and da_prev,
             the hidden-state gradient to pass back one more step in time.
         """
+        (a_prev, a_next, xt) = cache
+
         Waa = self.parameters["Waa"]
-        Wya = self.parameters["Wya"]
-
-        # --- output layer: z<t> = Wya @ a<t> + by, then softmax -> y<t> ---
-        dWya = np.dot(dy, a_t.T)                       # grad w.r.t. output weights
-        dby = np.sum(dy, axis=1, keepdims=True)        # grad w.r.t. output bias
-
-        # Total gradient on this step's hidden state = gradient coming from the
-        # output at this step, plus the gradient flowing back from future steps.
-        da = np.dot(Wya.T, dy) + da_next               # shape (n_a, m)
-
         # Backprop through the tanh non-linearity: d/dx tanh(x) = 1 - tanh(x)^2,
-        # and a_t == tanh(...), so the derivative uses the *current* state a_t.
-        dtanh = (1 - a_t ** 2) * da
+        # and a_next == tanh(...), so the derivative uses the *current* state a_next.
+        dtanh = (1 - a_next ** 2) * da_next
         dWax = np.dot(dtanh, xt.T)                     # grad w.r.t. input weights
         dWaa = np.dot(dtanh, a_prev.T)                 # grad w.r.t. recurrent weights
         dba = np.sum(dtanh, axis=1, keepdims=True)     # grad w.r.t. hidden bias
@@ -165,67 +164,49 @@ class RNN:
         gradients = {"dWax": dWax,
                      "dWaa": dWaa,
                      "dba": dba,
-                     "dWya": dWya,
-                     "dby": dby,
                      "da_prev": da_prev}
 
         return gradients
 
-    def rnn_backward(self, y_pred, Y, a, X):
-        """Backpropagation through time: sum gradients across all time steps.
+    def rnn_backward(self, da, caches):
+        """Backpropagation through time: sum the hidden-path gradients across steps.
 
         Args:
-            y_pred : predictions at every step,  shape (n_y, m, T_x)
-            Y      : one-hot targets at every step, shape (n_y, m, T_x)
-            a      : hidden states at every step, shape (n_a, m, T_x)
-            X      : the input sequence,          shape (n_x, m, T_x)
+            da     : gradient on each hidden state coming from the output layer,
+                     shape (n_a, m, T_x). The recurrent gradient flowing back from
+                     future steps is added on top of this inside the loop.
+            caches : (list_of_cell_caches, X) produced by rnn_forward.
         Returns:
-            gradients dict accumulating dWax, dWaa, dWya, dba, dby over the sequence.
+            gradients dict accumulating dWax, dWaa, dba over the sequence.
+            (dWya / dby are computed in train(), since the output layer is not
+            part of the recurrent BPTT chain.)
         """
-        Wax = self.parameters["Wax"]
-        Waa = self.parameters["Waa"]
-        Wya = self.parameters["Wya"]
-        ba = self.parameters["ba"]
-        by = self.parameters["by"]
+        (caches, X) = caches
+        (a0, a1, x1) = caches[0]
 
-        n_x, m, T_x = X.shape
-        n_a = a.shape[0]
+        n_a, m, T_x = da.shape
+        n_x, m = x1.shape                       # x1 is (n_x, m)
 
         # Accumulators for the parameter gradients (summed over time).
-        dWax = np.zeros_like(Wax)
-        dWaa = np.zeros_like(Waa)
-        dWya = np.zeros_like(Wya)
-        dba = np.zeros_like(ba)
-        dby = np.zeros_like(by)
+        dWax = np.zeros((n_a, n_x))             # input  -> hidden weights
+        dWaa = np.zeros((n_a, n_a))             # hidden -> hidden (recurrent) weights
+        dba = np.zeros((n_a, 1))                # hidden bias
 
-        da_next = np.zeros((n_a, m))  # hidden-state gradient carried backward in time
+        da_next = np.zeros((n_a, m))            # recurrent grad carried backward in time
 
         # Walk the sequence in reverse so gradients flow from the last step to the first.
+        # At each step the total hidden gradient is the output-path grad da[:,:,t]
+        # plus the recurrent grad da_next coming from the future.
         for t in reversed(range(T_x)):
-            # Gradient of softmax + cross-entropy at this step (output space).
-            dy = y_pred[:, :, t] - Y[:, :, t]
-            a_t = a[:, :, t]
-            # Hidden state feeding into step t; a<-1> is the zero initial state.
-            a_prev = a[:, :, t - 1] if t > 0 else np.zeros((n_a, m))
-
-            gradients = self.rnn_cell_backward(dy, da_next, X[:, :, t], a_t, a_prev)
+            gradients = self.rnn_cell_backward(da[:, :, t] + da_next, caches[t])
             dWax += gradients["dWax"]
             dWaa += gradients["dWaa"]
-            dWya += gradients["dWya"]
             dba += gradients["dba"]
-            dby += gradients["dby"]
-            da_next = gradients["da_prev"]  # pass hidden-state gradient one step back
+            da_next = gradients["da_prev"]      # pass hidden-state grad one step back
 
         gradients = {"dWax": dWax,
                      "dWaa": dWaa,
-                     "dWya": dWya,
-                     "dba": dba,
-                     "dby": dby}
-
-        # Clip gradients to a fixed range to prevent the "exploding gradient"
-        # problem that vanilla RNNs suffer from over long backprop chains.
-        for key in gradients:
-            np.clip(gradients[key], -5, 5, out=gradients[key])
+                     "dba": dba}
 
         return gradients
 
@@ -260,19 +241,55 @@ class RNN:
 
     def train(self):
         """Full training loop: forward pass, loss, backprop, parameter update."""
+        a0 = np.zeros((self.n_a, self.X.shape[1]))
+
         for i in range(self.iterations):
-            a, y_pred = self.rnn_forward(self.X)                  # forward pass
-            loss = self.compute_loss(y_pred, self.Y)              # how wrong are we?
-            gradients = self.rnn_backward(y_pred, self.Y, a, self.X)  # backprop through time
+            caches, a, y_pred = self.rnn_forward(self.X, a0)      # forward pass
+
+            # Output-layer gradient (same for softmax+CE and MSE): dy = y_pred - Y,
+            # shape (n_y, m, T_x).
+            dy = y_pred - self.Y
+
+            # The output weights Wya / bias by are shared across every time step, so
+            # their gradients sum over both the batch (m) and time (T_x) axes.
+            # einsum 'imt,jmt->ij' = sum_t dy[:,:,t] @ a[:,:,t].T  -> (n_y, n_a).
+            # np.dot equivalent (flatten the m and T_x axes into one, then 2D matmul):
+            #   n_y, m, T_x = dy.shape
+            #   dWya = np.dot(dy.reshape(n_y, m * T_x),
+            #                 a.reshape(self.n_a, m * T_x).T)
+            dWya = np.einsum("imt,jmt->ij", dy, a)                # grad w.r.t. output weights
+            dby = np.sum(dy, axis=(1, 2)).reshape(self.n_y, 1)    # grad w.r.t. output bias
+
+            # Gradient pushed from the output into each hidden state:
+            # da[:,:,t] = Wya.T @ dy[:,:,t]  -> (n_a, m, T_x).
+            # np.dot equivalent (flatten, 2D matmul, then reshape back):
+            #   n_y, m, T_x = dy.shape
+            #   da = np.dot(self.parameters["Wya"].T,
+            #               dy.reshape(n_y, m * T_x)).reshape(self.n_a, m, T_x)
+            da = np.einsum("ij,jmt->imt", self.parameters["Wya"].T, dy)
+
+            # Backprop through time for the recurrent params (dWax, dWaa, dba).
+            gradients = self.rnn_backward(da, caches)
+
+            gradients.update({
+                'dWya' : dWya,
+                'dby' : dby
+            })
+
+            for key in gradients:
+                np.clip(gradients[key], -5, 5, out=gradients[key])
+                
             self.update_parameters(gradients)                     # gradient descent step
 
             # Log progress every 100 iterations.
             if i % 100 == 0:
+                loss = self.compute_loss(y_pred, self.Y)              # how wrong are we?
                 print("Iteration: {}, Loss: {}".format(i, loss))
 
     def predict(self, X):
         """Run a forward pass through the trained RNN and return predictions."""
-        _, y_pred = self.rnn_forward(X)
+        a0 = np.zeros((self.n_a, X.shape[1]))            # zero initial hidden state
+        _, _, y_pred = self.rnn_forward(X, a0)           # forward returns (caches, a, y_pred)
         return y_pred
 
     def softmax(self, x):

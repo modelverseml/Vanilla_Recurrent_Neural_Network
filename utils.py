@@ -117,7 +117,7 @@ def predict_next(model, embedding, decoder, seed_word, is_char=False):
     else:
         x = embedding[seed_word].reshape(-1, 1)          # input word vector, shape (vector_size, 1)
     a_prev = np.zeros((model.n_a, 1))           # fresh hidden state
-    _, y_pred = model.rnn_cell_forward(x, a_prev)   # softmax distribution over vocab
+    _,_, y_pred = model.rnn_cell_forward(x, a_prev)   # softmax distribution over vocab
     idx = int(np.argmax(y_pred))
     return decoder[idx]                   # map local vocab index back to a word
 
@@ -149,7 +149,7 @@ def generate(model, embedding, decoder, seed_word, num_words=50, is_char=False, 
     result = [seed_word]
 
     for _ in range(num_words):
-        a_prev, y_pred = model.rnn_cell_forward(x, a_prev)   # one step forward
+        _, a_prev, y_pred = model.rnn_cell_forward(x, a_prev)   # one step forward
         if sample:
             idx = np.random.choice(model.n_y, p=y_pred.ravel())
         else:
