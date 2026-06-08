@@ -1,13 +1,16 @@
 """Data preparation and inference helpers for the from-scratch RNN.
 
-This module sits between raw text and the `RNN` class in `rnn_scratch.py`:
+This module sits between raw text and the multi-layer `RNN` class in
+`rnn_scratch_multi_layer.py`:
 
 * `generate_dataset` turns a corpus into the sliding-window training tensors the
   RNN expects, in either character mode (one-hot inputs) or word mode
   (pre-trained word-vector inputs).
+* `train_test_split` carves those tensors into train and test partitions.
+* `evaluate` scores a trained model on held-out data.
 * `predict_next` / `generate` run a *trained* model forward to produce text.
 
-Tensor convention (shared with `rnn_scratch.RNN`):
+Tensor convention (shared with `rnn_scratch_multi_layer.RNN`):
     n_x : input feature size  (vocab size for chars, vector size for words)
     n_y : output feature size (vocab size)
     m   : number of training sequences
@@ -98,11 +101,76 @@ def generate_dataset(
     return input_sequences, output_sequences, vocab_to_index, index_to_vocab
 
 
+def train_test_split(X, Y, test_size=0.2, shuffle=True, seed=0):
+    """Split the generated tensors into train and test partitions.
+
+    The sequences live along axis 1 (the ``m`` axis), so the split is taken
+    over that axis and the same column indices are used for X and Y to keep
+    each input paired with its target.
+
+    Args:
+        X         : input tensor,  shape (n_x, m, T_x).
+        Y         : target tensor, shape (n_y, m, T_x).
+        test_size : fraction of the ``m`` sequences to hold out for testing.
+        shuffle   : shuffle the sequence order before splitting.
+        seed      : RNG seed so the split is reproducible.
+
+    Returns:
+        X_train, X_test, Y_train, Y_test
+    """
+    m = X.shape[1]
+    indices = np.arange(m)
+    if shuffle:
+        np.random.default_rng(seed).shuffle(indices)
+
+    n_test = int(round(m * test_size))
+    test_idx, train_idx = indices[:n_test], indices[n_test:]
+
+    X_train, X_test = X[:, train_idx, :], X[:, test_idx, :]
+    Y_train, Y_test = Y[:, train_idx, :], Y[:, test_idx, :]
+    print(f"Split {m} sequences -> {X_train.shape[1]} train / {X_test.shape[1]} test.")
+    return X_train, X_test, Y_train, Y_test
+
+
+def evaluate(model, X, Y):
+    """Score a trained model on data X/Y.
+
+    For classification returns next-token accuracy (fraction of timesteps whose
+    argmax prediction matches the one-hot target). For regression returns the
+    mean-squared-error loss. Lower MSE / higher accuracy is better.
+    """
+    y_pred = model.predict(X)                       # (n_y, m, T_x)
+    if model.task == "classification":
+        # Compare predicted class (argmax over vocab axis) against the target.
+        correct = np.argmax(y_pred, axis=0) == np.argmax(Y, axis=0)
+        return float(np.mean(correct))
+    return model.compute_loss(y_pred, Y)
+
+
+def _encode_sequence(tokens, model, embedding, is_char):
+    """Encode a list of tokens into one input sequence of shape (n_x, 1, T).
+
+    Char mode -> one-hot columns; word mode -> stacked embedding vectors. This
+    is the same encoding `generate_dataset` produces, for a single sequence.
+    """
+    T = len(tokens)
+    x = np.zeros((model.n_x, 1, T))
+    for t, tok in enumerate(tokens):
+        if is_char:
+            x[embedding[tok], 0, t] = 1.0          # one-hot the character
+        else:
+            x[:, 0, t] = embedding[tok]            # dense word vector
+    return x
+
+
 def predict_next(model, embedding, decoder, seed_word, is_char=False):
     """Return the single most likely next token after ``seed_word`` (argmax).
 
+    Works for any model exposing ``predict`` (the manual RNN and the TensorFlow
+    / PyTorch wrappers all do), so the same call compares across frameworks.
+
     Args:
-        model     : a trained ``RNN`` instance.
+        model     : a trained model with a ``predict`` method and ``n_x``/``n_y``.
         embedding : how to turn a token into the model's input vector --
                     a ``vocab_to_index`` map in char mode, or a word-vector
                     lookup (gensim KeyedVectors / dict) in word mode.
@@ -111,25 +179,23 @@ def predict_next(model, embedding, decoder, seed_word, is_char=False):
         seed_word : the token to condition on.
         is_char   : True for the character model, False for the word model.
     """
-    if is_char:
-        x = np.zeros((model.n_x, 1))              # one-hot vector for input character
-        x[embedding[seed_word], 0] = 1
-    else:
-        x = embedding[seed_word].reshape(-1, 1)          # input word vector, shape (vector_size, 1)
-    a_prev = np.zeros((model.n_a, 1))           # fresh hidden state
-    _,_, y_pred = model.rnn_cell_forward(x, a_prev)   # softmax distribution over vocab
-    idx = int(np.argmax(y_pred))
-    return decoder[idx]                   # map local vocab index back to a word
+    x = _encode_sequence([seed_word], model, embedding, is_char)
+    y_pred = model.predict(x)                      # (n_y, 1, 1)
+    idx = int(np.argmax(y_pred[:, 0, -1]))         # distribution at the last step
+    return decoder[idx]
 
 
 def generate(model, embedding, decoder, seed_word, num_words=50, is_char=False, sample=True):
     """Generate text autoregressively, starting from ``seed_word``.
 
-    Each predicted token is fed back in as the next input and the hidden state is
-    carried forward, so the model continues its own sequence one token at a time.
+    At each step the tokens generated so far are re-encoded and run through
+    ``model.predict``; the distribution at the final timestep gives the next
+    token, which is appended and fed back in. Because it relies only on
+    ``predict``, the same routine drives the manual RNN and the TensorFlow /
+    PyTorch wrappers identically (no per-model hidden-state handling).
 
     Args:
-        model     : a trained ``RNN`` instance.
+        model     : a trained model with a ``predict`` method.
         embedding : token -> input-vector lookup (see ``predict_next``).
         decoder   : ``index_to_vocab`` map for turning indices back into tokens.
         seed_word : the token to start generation from.
@@ -139,28 +205,18 @@ def generate(model, embedding, decoder, seed_word, num_words=50, is_char=False, 
                              (varied output);
                     False -> always take the argmax (deterministic, tends to repeat).
     """
-    if is_char:
-        x = np.zeros((model.n_x, 1))              # one-hot vector for input character
-        x[embedding[seed_word], 0] = 1
-    else:
-        x = embedding[seed_word].reshape(-1, 1)     # one input word vector
-
-    a_prev = np.zeros((model.n_a, 1))           # hidden state carried across steps
-    result = [seed_word]
+    tokens = [seed_word]
 
     for _ in range(num_words):
-        _, a_prev, y_pred = model.rnn_cell_forward(x, a_prev)   # one step forward
+        x = _encode_sequence(tokens, model, embedding, is_char)
+        y_pred = model.predict(x)                  # (n_y, 1, T)
+        probs = y_pred[:, 0, -1]                   # next-token scores at last step
         if sample:
-            idx = np.random.choice(model.n_y, p=y_pred.ravel())
+            probs = np.clip(probs, 1e-12, None)
+            probs = probs / probs.sum()            # renormalise to a valid pmf
+            idx = int(np.random.choice(model.n_y, p=probs))
         else:
-            idx = np.argmax(y_pred)
-        word = decoder[int(idx)]
-        result.append(word)
-        
-        if is_char:
-            x = np.zeros((model.n_x, 1))          # one-hot vector for input character
-            x[embedding[word], 0] = 1
-        else:
-            x = embedding[word].reshape(-1, 1)      # feed predicted word back in as next input
+            idx = int(np.argmax(probs))
+        tokens.append(decoder[idx])
 
-    return ' '.join(result) if not is_char else ''.join(result)
+    return ''.join(tokens) if is_char else ' '.join(tokens)

@@ -6,9 +6,10 @@ framework for the model itself. This repository has two halves:
 1. **The theory** — a complete, hand-derived account of how an RNN works: the forward
    recurrence, the softmax + cross-entropy gradient, and full **Backpropagation Through
    Time (BPTT)**, with every step shown explicitly and illustrated.
-2. **The code** — that derivation turned directly into a readable NumPy implementation,
-   trained with BPTT and used to generate text both character-by-character and
-   word-by-word.
+2. **The code** — that derivation turned directly into a readable, stacked (multi-layer)
+   NumPy implementation, trained with BPTT and used to generate text character-by-character
+   and word-by-word. The same architecture is also rebuilt in **TensorFlow/Keras** and
+   **PyTorch**, and all three are compared side by side on the same data.
 
 > Educational project: the goal is to make the mechanics of an RNN explicit and
 > readable, not to be fast or state-of-the-art.
@@ -44,7 +45,9 @@ gradient, and the vector/matrix gradient rules.
 - [Part 2 — The Code](#part-2--the-code)
   - [Pipeline](#pipeline)
   - [Project structure](#project-structure)
-    - [`rnn_scratch.py` — the model](#rnn_scratchpy--the-model)
+    - [`rnn_scratch_multi_layer.py` — the from-scratch model](#rnn_scratch_multi_layerpy--the-from-scratch-model)
+    - [`rnn_tensorflow.py` / `rnn_pytorch.py` — framework versions](#rnn_tensorflowpy--rnn_pytorchpy--framework-versions)
+    - [`compare.py` — side-by-side comparison](#comparepy--side-by-side-comparison)
     - [`utils.py` — data \& inference helpers](#utilspy--data--inference-helpers)
   - [Setup](#setup)
   - [Usage](#usage)
@@ -292,51 +295,65 @@ previous hidden state — gives the complete BPTT picture:
 
 # Part 2 — The Code
 
-The implementation turns the derivation above directly into NumPy. The network is
-trained with full BPTT and used to generate text both character-by-character and
-word-by-word. The accompanying notebook also compares several word-embedding strategies
-(Word2Vec, pre-trained GloVe, FastText) and a pre-trained Transformer (BERT) as
-encoders.
+The implementation turns the derivation above directly into NumPy as a **stacked
+(multi-layer) RNN**, trained with full BPTT and used to generate text both
+character-by-character and word-by-word.
+
+To put the from-scratch model in context, the same architecture is then built two more
+ways — with **TensorFlow/Keras** and with **PyTorch** — and all three are compared on the
+same data, architecture, and hyper-parameters. The notebook runs this 3-way comparison
+across a one-hot character model and four word-embedding encoders (Word2Vec, pre-trained
+GloVe, FastText, and a pre-trained BERT Transformer).
 
 ## Pipeline
 
 ```
-raw text → vocabulary → sliding-window sequences → train RNN (BPTT) → predict / generate
+raw text → vocabulary → sliding-window sequences → train/test split
+        → train RNN (BPTT) → evaluate (train/test accuracy) → predict / generate
 ```
 
 - **Character model** — inputs are one-hot character vectors; the RNN learns surface
   character statistics and generates text one character at a time.
 - **Word model** — inputs are dense word-embedding vectors (Word2Vec / GloVe /
-  FastText); the RNN predicts a probability distribution over the vocabulary and
+  FastText / BERT); the RNN predicts a probability distribution over the vocabulary and
   generates text one word at a time.
+- **3-way comparison** — the manual NumPy RNN, a Keras model, and a PyTorch model are
+  trained on the same split and compared by train/test accuracy and sample generations.
 
 ## Project structure
 
 ```
 RNN/
-├── rnn_scratch.py              # the RNN class: forward pass, loss, BPTT, training loop
-├── utils.py                    # data prep (generate_dataset) + inference (predict_next, generate)
-├── rnn_building_scratch.ipynb  # end-to-end walkthrough: char model, word models, BERT encoder
+├── rnn_scratch_multi_layer.py  # the from-scratch RNN: stacked layers, forward, loss, BPTT, training
+├── rnn_tensorflow.py           # KerasRNN — same architecture/interface, built with TensorFlow/Keras
+├── rnn_pytorch.py              # TorchRNN — same architecture/interface, built with PyTorch
+├── compare.py                  # compare_models — train/test accuracy + generation across models
+├── utils.py                    # data prep + split + evaluate + inference (predict_next, generate)
+├── rnn_scratch_single_layer.py # the original single-layer RNN (kept for reference)
+├── rnn_building_scratch.ipynb  # end-to-end walkthrough + 3-way comparison (char + 4 word encoders)
 ├── Images/                     # diagrams used in this README
 ├── requirements.txt            # Python dependencies
 └── README.md
 ```
 
-### `rnn_scratch.py` — the model
+### `rnn_scratch_multi_layer.py` — the from-scratch model
 
-`RNN` carries a hidden state `a` across `T_x` time steps and is trained with plain
-gradient descent over the gradients accumulated by BPTT. Each method maps onto a section
-of the derivation above.
+`RNN` stacks one or more recurrent layers (set with `hidden_layers`, e.g. `(50,)` for one
+layer or `(100, 64)` for two), carries a per-layer hidden state across `T_x` time steps,
+and is trained with plain gradient descent over the gradients accumulated by BPTT. Each
+method maps onto a section of the derivation above.
 
 | Method | Role | Derivation |
 | --- | --- | --- |
-| `initialize_parameters` | small random weights `Wax, Waa, Wya` and zero biases `ba, by` | §1 |
-| `rnn_cell_forward` | one time step: `a_next = tanh(Wax·x + Waa·a_prev + ba)`, then softmax/linear output | §2 |
-| `rnn_forward` | run the recurrence over the whole sequence | §2 |
+| `initialize_parameters` | per-layer weights `Wax[l], Waa[l], ba[l]` plus the output layer `Wya, by` | §1 |
+| `layer_forward` | run one recurrent layer over the whole sequence | §2 |
+| `rnn_forward` | stack the layers, then apply the output projection at every step | §2 |
+| `rnn_cell_forward` | one timestep through the whole stack (used for text generation) | §2 |
 | `compute_loss` | cross-entropy (classification) or MSE (regression) | §4 |
-| `rnn_cell_backward` / `rnn_backward` | backprop one step / through time, with gradient clipping | §5–§7 |
+| `layer_backward` / `rnn_backward` | BPTT for one layer / down through the stack, with gradient clipping | §5–§7 |
 | `update_parameters` | one gradient-descent step | — |
 | `train` | the full loop: forward → loss → backward → update | — |
+| `predict` | forward pass returning predictions `(n_y, m, T_x)` | §2 |
 
 It supports two tasks:
 
@@ -346,14 +363,39 @@ It supports two tasks:
 In both cases the per-step output gradient reduces to `y_pred - Y`, exactly the
 `ŷ − y_true` derived in §5.
 
+### `rnn_tensorflow.py` / `rnn_pytorch.py` — framework versions
+
+`KerasRNN` and `TorchRNN` mirror the from-scratch model: they take the **same constructor
+inputs** (`X, Y, hidden_layers, learning_rate, iterations, task`) and expose the same
+`train()` / `predict()` interface, so the helpers in `utils.py` and `compare.py` work on
+them unchanged. They are standalone — each trains natively (stacked `SimpleRNN` /
+`nn.RNN`, Adam optimizer) and `predict` runs its own framework forward, returning the
+same `(n_y, m, T_x)` layout. They do **not** share weights with the manual model.
+
+> Because the frameworks optimize with **Adam** and the from-scratch model with plain
+> **SGD + gradient clipping**, their learned weights and accuracies differ — this is a
+> realistic "library vs scratch" comparison, not a bit-for-bit match.
+
+### `compare.py` — side-by-side comparison
+
+`compare_models(models, X_train, Y_train, X_test, Y_test, ...)` takes a
+`{name: trained_model}` mapping and prints a **train/test accuracy** table (or MSE for
+regression) plus a sample generation for each model. Training is done by the caller, so
+you can compare all three models or just the manual one.
+
 ### `utils.py` — data & inference helpers
 
 - `generate_dataset(...)` — slides a window of length `T_x` over the corpus and builds
   the `(n_x, m, T_x)` input and `(n_y, m, T_x)` target tensors, in either character or
   word mode.
+- `train_test_split(...)` — splits the sequences into train/test partitions.
+- `evaluate(...)` — next-token accuracy (classification) or MSE (regression) on given data.
 - `predict_next(...)` — one token in, the single most likely next token out (argmax).
 - `generate(...)` — autoregressive generation, optionally sampling from the predicted
   distribution for more varied output.
+
+`predict_next` / `generate` rely only on a model's `predict` method, so the same calls
+drive the manual RNN and both framework wrappers identically.
 
 **Tensor convention** used throughout:
 
@@ -393,21 +435,23 @@ jupyter notebook rnn_building_scratch.ipynb
 Or use the modules directly — character-level example:
 
 ```python
-from rnn_scratch import RNN
-from utils import generate_dataset, predict_next, generate
+from rnn_scratch_multi_layer import RNN
+from utils import generate_dataset, train_test_split, evaluate, predict_next, generate
 
 text = "your training corpus here ..."
 
-# build one-hot character sequences
+# build one-hot character sequences, then split into train/test
 X, Y, char_to_index, index_to_char = generate_dataset(
     text, T_x=10, is_char=True, word_vectors=[], seq_length=25
 )
+X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2)
 
-# train
-model = RNN(X, Y, n_a=100, learning_rate=0.001, iterations=2000)
+# train a stacked RNN (hidden_layers sets the number and size of layers)
+model = RNN(X_train, Y_train, hidden_layers=(50,), learning_rate=0.001, iterations=1000)
 model.train()
 
-# generate
+# evaluate + generate
+print("test accuracy:", evaluate(model, X_test, Y_test))
 print(predict_next(model, char_to_index, index_to_char, seed_word="M", is_char=True))
 print(generate(model, char_to_index, index_to_char, seed_word="A", num_words=100, is_char=True))
 ```
@@ -422,11 +466,36 @@ words = [w for s in sentences for w in s]
 w2v = Word2Vec(sentences, vector_size=100, window=5, min_count=1, sg=1).wv
 
 X, Y, vocab_to_index, index_to_vocab = generate_dataset(words, T_x=5, is_char=False, word_vectors=w2v)
-model = RNN(X, Y, n_a=100, learning_rate=0.01, iterations=2000, task="classification")
+X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2)
+
+model = RNN(X_train, Y_train, hidden_layers=(100, 64), learning_rate=0.01, iterations=2000, task="classification")
 model.train()
 
 print(predict_next(model, w2v, index_to_vocab, "Machine"))
 print(generate(model, w2v, index_to_vocab, seed_word="Machine", num_words=10, sample=True))
+```
+
+Compare all three implementations on the same data:
+
+```python
+from rnn_scratch_multi_layer import RNN
+from rnn_tensorflow import KerasRNN
+from rnn_pytorch import TorchRNN
+from compare import compare_models
+
+cfg = dict(hidden_layers=(50,), learning_rate=0.001, iterations=1000, task="classification")
+models = {
+    "manual (numpy)": RNN(X_train, Y_train, **cfg),
+    "tensorflow":     KerasRNN(X_train, Y_train, **cfg),
+    "pytorch":        TorchRNN(X_train, Y_train, **cfg),
+}
+for m in models.values():
+    m.train()
+
+# train/test accuracy table + a sample generation from each model
+compare_models(models, X_train, Y_train, X_test, Y_test,
+               embedding=char_to_index, decoder=index_to_char,
+               seed_word="M", is_char=True, num_gen=100)
 ```
 
 

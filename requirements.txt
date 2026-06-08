@@ -7,3 +7,6 @@ scipy
 fasttext
 transformers
 torch
+
+tensorflow
+keras
