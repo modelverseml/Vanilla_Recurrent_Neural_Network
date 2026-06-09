@@ -10,11 +10,12 @@ This module sits between raw text and the multi-layer `RNN` class in
 * `evaluate` scores a trained model on held-out data.
 * `predict_next` / `generate` run a *trained* model forward to produce text.
 
-Tensor convention (shared with `rnn_scratch_multi_layer.RNN`):
+Tensor convention (batch-first, shared with `rnn_scratch_multi_layer.RNN`):
+    m   : number of training sequences (batch size)
+    T_x : time steps per sequence
     n_x : input feature size  (vocab size for chars, vector size for words)
     n_y : output feature size (vocab size)
-    m   : number of training sequences
-    T_x : time steps per sequence
+so inputs are (m, T_x, n_x) and targets are (m, T_x, n_y).
 """
 
 import numpy as np
@@ -45,10 +46,10 @@ def generate_dataset(
                         windows never index past the end of the corpus.
 
     Returns:
-        input_sequences  : inputs,  shape (n_x, m, T_x)
-        output_sequences : one-hot targets, shape (n_y, m, T_x)
-        vocab_to_index   : dict mapping token -> column index
-        index_to_vocab   : dict mapping column index -> token (used to decode)
+        input_sequences  : inputs,  shape (m, T_x, n_x)
+        output_sequences : one-hot targets, shape (m, T_x, n_y)
+        vocab_to_index   : dict mapping token -> feature index
+        index_to_vocab   : dict mapping feature index -> token (used to decode)
     """
     # In word mode, drop any token that the embedding doesn't know about -- there
     # is no vector to feed the network for an out-of-vocabulary word. gensim
@@ -79,21 +80,21 @@ def generate_dataset(
         n_y = len(vocabs)
         m = len(words_or_text) - T_x - 1
 
-    input_sequences = np.zeros((n_x, m, T_x))
-    output_sequences = np.zeros((n_y, m, T_x))
+    input_sequences = np.zeros((m, T_x, n_x))
+    output_sequences = np.zeros((m, T_x, n_y))
 
     # Fill window i, step t with token (i+t); the target is the next token (i+t+1).
     for i in range(m):
         for t in range(T_x):
             if is_char:
                 # One-hot encode the input character.
-                input_sequences[vocab_to_index[words_or_text[i+t]], i, t] = 1
+                input_sequences[i, t, vocab_to_index[words_or_text[i+t]]] = 1
 
             else:
                 # Use the dense word vector as the input feature.
-                input_sequences[:, i, t] = word_vectors[words_or_text[i+t]]
+                input_sequences[i, t, :] = word_vectors[words_or_text[i+t]]
             # Targets are always one-hot over the vocabulary, in both modes.
-            output_sequences[vocab_to_index[words_or_text[i+t+1]], i, t] = 1
+            output_sequences[i, t, vocab_to_index[words_or_text[i+t+1]]] = 1
 
     print(f"Generated {m} training sequences of length {T_x} from a corpus of "
           f"{len(words_or_text)} tokens, with a vocabulary of {len(vocabs)} unique "
@@ -104,13 +105,13 @@ def generate_dataset(
 def train_test_split(X, Y, test_size=0.2, shuffle=True, seed=0):
     """Split the generated tensors into train and test partitions.
 
-    The sequences live along axis 1 (the ``m`` axis), so the split is taken
-    over that axis and the same column indices are used for X and Y to keep
+    The sequences live along axis 0 (the ``m`` axis), so the split is taken
+    over that axis and the same row indices are used for X and Y to keep
     each input paired with its target.
 
     Args:
-        X         : input tensor,  shape (n_x, m, T_x).
-        Y         : target tensor, shape (n_y, m, T_x).
+        X         : input tensor,  shape (m, T_x, n_x).
+        Y         : target tensor, shape (m, T_x, n_y).
         test_size : fraction of the ``m`` sequences to hold out for testing.
         shuffle   : shuffle the sequence order before splitting.
         seed      : RNG seed so the split is reproducible.
@@ -118,7 +119,7 @@ def train_test_split(X, Y, test_size=0.2, shuffle=True, seed=0):
     Returns:
         X_train, X_test, Y_train, Y_test
     """
-    m = X.shape[1]
+    m = X.shape[0]
     indices = np.arange(m)
     if shuffle:
         np.random.default_rng(seed).shuffle(indices)
@@ -126,9 +127,9 @@ def train_test_split(X, Y, test_size=0.2, shuffle=True, seed=0):
     n_test = int(round(m * test_size))
     test_idx, train_idx = indices[:n_test], indices[n_test:]
 
-    X_train, X_test = X[:, train_idx, :], X[:, test_idx, :]
-    Y_train, Y_test = Y[:, train_idx, :], Y[:, test_idx, :]
-    print(f"Split {m} sequences -> {X_train.shape[1]} train / {X_test.shape[1]} test.")
+    X_train, X_test = X[train_idx], X[test_idx]
+    Y_train, Y_test = Y[train_idx], Y[test_idx]
+    print(f"Split {m} sequences -> {X_train.shape[0]} train / {X_test.shape[0]} test.")
     return X_train, X_test, Y_train, Y_test
 
 
@@ -139,27 +140,27 @@ def evaluate(model, X, Y):
     argmax prediction matches the one-hot target). For regression returns the
     mean-squared-error loss. Lower MSE / higher accuracy is better.
     """
-    y_pred = model.predict(X)                       # (n_y, m, T_x)
+    y_pred = model.predict(X)                       # (m, T_x, n_y)
     if model.task == "classification":
-        # Compare predicted class (argmax over vocab axis) against the target.
-        correct = np.argmax(y_pred, axis=0) == np.argmax(Y, axis=0)
+        # Compare predicted class (argmax over the feature axis) against the target.
+        correct = np.argmax(y_pred, axis=-1) == np.argmax(Y, axis=-1)
         return float(np.mean(correct))
     return model.compute_loss(y_pred, Y)
 
 
 def _encode_sequence(tokens, model, embedding, is_char):
-    """Encode a list of tokens into one input sequence of shape (n_x, 1, T).
+    """Encode a list of tokens into one input sequence of shape (1, T, n_x).
 
-    Char mode -> one-hot columns; word mode -> stacked embedding vectors. This
-    is the same encoding `generate_dataset` produces, for a single sequence.
+    Char mode -> one-hot rows; word mode -> stacked embedding vectors. This is
+    the same encoding `generate_dataset` produces, for a single sequence.
     """
     T = len(tokens)
-    x = np.zeros((model.n_x, 1, T))
+    x = np.zeros((1, T, model.n_x))
     for t, tok in enumerate(tokens):
         if is_char:
-            x[embedding[tok], 0, t] = 1.0          # one-hot the character
+            x[0, t, embedding[tok]] = 1.0          # one-hot the character
         else:
-            x[:, 0, t] = embedding[tok]            # dense word vector
+            x[0, t, :] = embedding[tok]            # dense word vector
     return x
 
 
@@ -180,8 +181,8 @@ def predict_next(model, embedding, decoder, seed_word, is_char=False):
         is_char   : True for the character model, False for the word model.
     """
     x = _encode_sequence([seed_word], model, embedding, is_char)
-    y_pred = model.predict(x)                      # (n_y, 1, 1)
-    idx = int(np.argmax(y_pred[:, 0, -1]))         # distribution at the last step
+    y_pred = model.predict(x)                      # (1, T, n_y)
+    idx = int(np.argmax(y_pred[0, -1, :]))         # distribution at the last step
     return decoder[idx]
 
 
@@ -209,8 +210,8 @@ def generate(model, embedding, decoder, seed_word, num_words=50, is_char=False, 
 
     for _ in range(num_words):
         x = _encode_sequence(tokens, model, embedding, is_char)
-        y_pred = model.predict(x)                  # (n_y, 1, T)
-        probs = y_pred[:, 0, -1]                   # next-token scores at last step
+        y_pred = model.predict(x)                  # (1, T, n_y)
+        probs = y_pred[0, -1, :]                   # next-token scores at last step
         if sample:
             probs = np.clip(probs, 1e-12, None)
             probs = probs / probs.sum()            # renormalise to a valid pmf

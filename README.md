@@ -22,6 +22,13 @@ A complete mathematical derivation of forward propagation and backpropagation th
 time (BPTT) for a vanilla RNN, including the softmax gradient, the cross-entropy loss
 gradient, and the vector/matrix gradient rules.
 
+> **Convention.** This derivation uses the standard **column-vector** form, e.g.
+> `a = tanh(Wax·x + Waa·a_prev + ba)` and `∂L/∂Wax = (∂L/∂a_raw)·xᵀ`. The code uses the
+> equivalent **batch-first / row-vector** layout (data shaped `(m, T_x, n_x)`, so
+> `a = tanh(x·Wax + a_prev·Waa + ba)` with weights stored transposed). Every formula
+> below still holds — the two forms are exact transposes of each other, so the gradients
+> are identical and only the orientation differs.
+
 ## Table of Contents
 
 - [RNN from Scratch — Derivation \& Implementation](#rnn-from-scratch--derivation--implementation)
@@ -353,7 +360,7 @@ method maps onto a section of the derivation above.
 | `layer_backward` / `rnn_backward` | BPTT for one layer / down through the stack, with gradient clipping | §5–§7 |
 | `update_parameters` | one gradient-descent step | — |
 | `train` | the full loop: forward → loss → backward → update | — |
-| `predict` | forward pass returning predictions `(n_y, m, T_x)` | §2 |
+| `predict` | forward pass returning predictions `(m, T_x, n_y)` | §2 |
 
 It supports two tasks:
 
@@ -363,6 +370,12 @@ It supports two tasks:
 In both cases the per-step output gradient reduces to `y_pred - Y`, exactly the
 `ŷ − y_true` derived in §5.
 
+> **Layout note.** The tensors use the standard **batch-first** layout
+> `(m, T_x, n_x)`, so examples are rows and a step is `x @ Wax + a @ Waa + b`
+> (weights to the *right* of the data). The Part 1 derivation writes the same
+> step with column vectors as `Wax · x + Waa · a + b`; the two are transposes of
+> each other and produce identical results.
+
 ### `rnn_tensorflow.py` / `rnn_pytorch.py` — framework versions
 
 `KerasRNN` and `TorchRNN` mirror the from-scratch model: they take the **same constructor
@@ -370,7 +383,7 @@ inputs** (`X, Y, hidden_layers, learning_rate, iterations, task`) and expose the
 `train()` / `predict()` interface, so the helpers in `utils.py` and `compare.py` work on
 them unchanged. They are standalone — each trains natively (stacked `SimpleRNN` /
 `nn.RNN`, Adam optimizer) and `predict` runs its own framework forward, returning the
-same `(n_y, m, T_x)` layout. They do **not** share weights with the manual model.
+same `(m, T_x, n_y)` layout. They do **not** share weights with the manual model.
 
 > Because the frameworks optimize with **Adam** and the from-scratch model with plain
 > **SGD + gradient clipping**, their learned weights and accuracies differ — this is a
@@ -386,7 +399,7 @@ you can compare all three models or just the manual one.
 ### `utils.py` — data & inference helpers
 
 - `generate_dataset(...)` — slides a window of length `T_x` over the corpus and builds
-  the `(n_x, m, T_x)` input and `(n_y, m, T_x)` target tensors, in either character or
+  the `(m, T_x, n_x)` input and `(m, T_x, n_y)` target tensors, in either character or
   word mode.
 - `train_test_split(...)` — splits the sequences into train/test partitions.
 - `evaluate(...)` — next-token accuracy (classification) or MSE (regression) on given data.
