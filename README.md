@@ -1,15 +1,17 @@
 # RNN from Scratch — Derivation & Implementation
 
 A vanilla **Recurrent Neural Network built from scratch in NumPy** — no deep-learning
-framework for the model itself. This repository has two halves:
+framework for the model itself. This repository has two parts:
 
 1. **The theory** — a complete, hand-derived account of how an RNN works: the forward
    recurrence, the softmax + cross-entropy gradient, and full **Backpropagation Through
    Time (BPTT)**, with every step shown explicitly and illustrated.
-2. **The code** — that derivation turned directly into a readable, stacked (multi-layer)
-   NumPy implementation, trained with BPTT and used to generate text character-by-character
-   and word-by-word. The same architecture is also rebuilt in **TensorFlow/Keras** and
-   **PyTorch**, and all three are compared side by side on the same data.
+2. **A full-stack sentiment app** — the same vanilla RNN applied to a real task:
+   classifying product-review sentiment (negative / neutral / positive). It is implemented
+   **three ways on identical data** — from scratch in NumPy (the derivation in Part 1,
+   turned into code), and in **PyTorch** and **TensorFlow** — across four text encoders
+   (word2vec, fastText, GloVe, BERT), then served through a **FastAPI** backend and a
+   **React** UI that shows every model's prediction + confidence side by side.
 
 > Educational project: the goal is to make the mechanics of an RNN explicit and
 > readable, not to be fast or state-of-the-art.
@@ -49,16 +51,14 @@ gradient, and the vector/matrix gradient rules.
     - [Hidden state gradients](#hidden-state-gradients)
     - [Weight gradients](#weight-gradients)
   - [8. Summary of Gradient Equations](#8-summary-of-gradient-equations)
-- [Part 2 — The Code](#part-2--the-code)
-  - [Pipeline](#pipeline)
+- [Part 2 — Sentiment Classification App (Full-Stack)](#part-2--sentiment-classification-app-full-stack)
+  - [What it does](#what-it-does)
   - [Project structure](#project-structure)
-    - [`rnn_scratch_multi_layer.py` — the from-scratch model](#rnn_scratch_multi_layerpy--the-from-scratch-model)
-    - [`rnn_tensorflow.py` / `rnn_pytorch.py` — framework versions](#rnn_tensorflowpy--rnn_pytorchpy--framework-versions)
-    - [`compare.py` — side-by-side comparison](#comparepy--side-by-side-comparison)
-    - [`utils.py` — data \& inference helpers](#utilspy--data--inference-helpers)
-  - [Setup](#setup)
-  - [Usage](#usage)
-  - [Reference](#reference)
+  - [1. Build the models (one command)](#1-build-the-models-one-command)
+  - [2. How the encoders stay small](#2-how-the-encoders-stay-small)
+  - [3. Run the app locally](#3-run-the-app-locally)
+  - [Deploying](#deploying)
+- [Reference](#reference)
 
 ---
 
@@ -300,218 +300,128 @@ previous hidden state — gives the complete BPTT picture:
 
 ---
 
-# Part 2 — The Code
+# Part 2 — Sentiment Classification App (Full-Stack)
 
-The implementation turns the derivation above directly into NumPy as a **stacked
-(multi-layer) RNN**, trained with full BPTT and used to generate text both
-character-by-character and word-by-word.
+Part 1 derives a vanilla RNN. Part 2 turns that derivation into a working app: the same
+RNN is implemented from scratch in NumPy (plus PyTorch and TensorFlow versions), trained
+to classify review sentiment, and served behind a small web UI.
 
-To put the from-scratch model in context, the same architecture is then built two more
-ways — with **TensorFlow/Keras** and with **PyTorch** — and all three are compared on the
-same data, architecture, and hyper-parameters. The notebook runs this 3-way comparison
-across a one-hot character model and four word-embedding encoders (Word2Vec, pre-trained
-GloVe, FastText, and a pre-trained BERT Transformer).
+## What it does
 
-## Pipeline
+Given a product review, it predicts the sentiment — **negative / neutral / positive** —
+and shows how twelve models compare on the same sentence: **four text encoders**
+(word2vec · fastText · GloVe · BERT) × **three implementations** of the same vanilla RNN:
 
-```
-raw text → vocabulary → sliding-window sequences → train/test split
-        → train RNN (BPTT) → evaluate (train/test accuracy) → predict / generate
-```
+| Implementation | File | Notes |
+|---|---|---|
+| **PyTorch** | `model_artifacts_generation.py` | `nn.RNN`, 2 layers + dropout, last-real-word readout |
+| **TensorFlow** | `model_artifacts_generation.py` | `SimpleRNN` → softmax |
+| **Manual (NumPy)** | `manual_rnn.py` | from scratch: forward, BPTT, Adam, gradient clipping — the Part 1 derivation, applied to classification |
 
-- **Character model** — inputs are one-hot character vectors; the RNN learns surface
-  character statistics and generates text one character at a time.
-- **Word model** — inputs are dense word-embedding vectors (Word2Vec / GloVe /
-  FastText / BERT); the RNN predicts a probability distribution over the vocabulary and
-  generates text one word at a time.
-- **3-way comparison** — the manual NumPy RNN, a Keras model, and a PyTorch model are
-  trained on the same split and compared by train/test accuracy and sample generations.
+A **FastAPI** backend loads all the trained models and a **React** frontend sends a
+review to it, then displays each model's predicted label, confidence, and full class
+probabilities, plus a consensus vote across all models.
 
 ## Project structure
 
 ```
-RNN/
-├── rnn_scratch_multi_layer.py  # the from-scratch RNN: stacked layers, forward, loss, BPTT, training
-├── rnn_tensorflow.py           # KerasRNN — same architecture/interface, built with TensorFlow/Keras
-├── rnn_pytorch.py              # TorchRNN — same architecture/interface, built with PyTorch
-├── compare.py                  # compare_models — train/test accuracy + generation across models
-├── utils.py                    # data prep + split + evaluate + inference (predict_next, generate)
-├── rnn_scratch_single_layer.py # the original single-layer RNN (kept for reference)
-├── rnn_building_scratch.ipynb  # end-to-end walkthrough + 3-way comparison (char + 4 word encoders)
-├── Images/                     # diagrams used in this README
-├── requirements.txt            # Python dependencies
-└── README.md
+Vanilla-RNN/
+├── code/
+│   ├── model_building/                 # produces the models
+│   │   ├── data_generation.py          # 1. download + split reviews -> data/raw/
+│   │   ├── encoder.py                  # 2. build+trim encoders, encode splits
+│   │   ├── model_artifacts_generation.py  # 3. train PyTorch + TF + manual RNNs
+│   │   ├── manual_rnn.py               #    the from-scratch NumPy RNN (used by step 3)
+│   │   └── run_pipeline.py             #    runs steps 1-3 end to end
+│   └── backend/                        # serves the models
+│       ├── predictor.py                # text -> per-model predictions (no web framework)
+│       ├── app.py                      # FastAPI: POST /predict, GET /health, /info
+│       └── requirements.txt
+├── frontend/                           # Vite + React UI
+└── data/                               # raw splits, trimmed encoders, embeddings, model artifacts
 ```
 
-### `rnn_scratch_multi_layer.py` — the from-scratch model
+(See [`code/README.md`](code/README.md) for the per-file details.)
 
-`RNN` stacks one or more recurrent layers (set with `hidden_layers`, e.g. `(50,)` for one
-layer or `(100, 64)` for two), carries a per-layer hidden state across `T_x` time steps,
-and is trained with plain gradient descent over the gradients accumulated by BPTT. Each
-method maps onto a section of the derivation above.
-
-| Method | Role | Derivation |
-| --- | --- | --- |
-| `initialize_parameters` | per-layer weights `Wax[l], Waa[l], ba[l]` plus the output layer `Wya, by` | §1 |
-| `layer_forward` | run one recurrent layer over the whole sequence | §2 |
-| `rnn_forward` | stack the layers, then apply the output projection at every step | §2 |
-| `rnn_cell_forward` | one timestep through the whole stack (used for text generation) | §2 |
-| `compute_loss` | cross-entropy (classification) or MSE (regression) | §4 |
-| `layer_backward` / `rnn_backward` | BPTT for one layer / down through the stack, with gradient clipping | §5–§7 |
-| `update_parameters` | one gradient-descent step | — |
-| `train` | the full loop: forward → loss → backward → update | — |
-| `predict` | forward pass returning predictions `(m, T_x, n_y)` | §2 |
-
-It supports two tasks:
-
-- `task="classification"` — softmax output + cross-entropy loss (one-hot targets).
-- `task="regression"` — linear output + mean-squared-error loss (real-valued targets).
-
-In both cases the per-step output gradient reduces to `y_pred - Y`, exactly the
-`ŷ − y_true` derived in §5.
-
-> **Layout note.** The tensors use the standard **batch-first** layout
-> `(m, T_x, n_x)`, so examples are rows and a step is `x @ Wax + a @ Waa + b`
-> (weights to the *right* of the data). The Part 1 derivation writes the same
-> step with column vectors as `Wax · x + Waa · a + b`; the two are transposes of
-> each other and produce identical results.
-
-### `rnn_tensorflow.py` / `rnn_pytorch.py` — framework versions
-
-`KerasRNN` and `TorchRNN` mirror the from-scratch model: they take the **same constructor
-inputs** (`X, Y, hidden_layers, learning_rate, iterations, task`) and expose the same
-`train()` / `predict()` interface, so the helpers in `utils.py` and `compare.py` work on
-them unchanged. They are standalone — each trains natively (stacked `SimpleRNN` /
-`nn.RNN`, Adam optimizer) and `predict` runs its own framework forward, returning the
-same `(m, T_x, n_y)` layout. They do **not** share weights with the manual model.
-
-> Because the frameworks optimize with **Adam** and the from-scratch model with plain
-> **SGD + gradient clipping**, their learned weights and accuracies differ — this is a
-> realistic "library vs scratch" comparison, not a bit-for-bit match.
-
-### `compare.py` — side-by-side comparison
-
-`compare_models(models, X_train, Y_train, X_test, Y_test, ...)` takes a
-`{name: trained_model}` mapping and prints a **train/test accuracy** table (or MSE for
-regression) plus a sample generation for each model. Training is done by the caller, so
-you can compare all three models or just the manual one.
-
-### `utils.py` — data & inference helpers
-
-- `generate_dataset(...)` — slides a window of length `T_x` over the corpus and builds
-  the `(m, T_x, n_x)` input and `(m, T_x, n_y)` target tensors, in either character or
-  word mode.
-- `train_test_split(...)` — splits the sequences into train/test partitions.
-- `evaluate(...)` — next-token accuracy (classification) or MSE (regression) on given data.
-- `predict_next(...)` — one token in, the single most likely next token out (argmax).
-- `generate(...)` — autoregressive generation, optionally sampling from the predicted
-  distribution for more varied output.
-
-`predict_next` / `generate` rely only on a model's `predict` method, so the same calls
-drive the manual RNN and both framework wrappers identically.
-
-**Tensor convention** used throughout:
-
-| Symbol | Meaning |
-| --- | --- |
-| `n_x` | input feature size (vocab size for chars, vector size for words) |
-| `n_y` | output feature size (vocab size) |
-| `m`   | number of training sequences |
-| `T_x` | time steps per sequence |
-
-## Setup
+## 1. Build the models (one command)
 
 ```bash
-# (recommended) create and activate a virtual environment
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+cd code/model_building
+python run_pipeline.py                  # data -> encoder -> model
+# reuse existing data + encoders, just retrain:
+python run_pipeline.py --skip data encoder
+```
 
-# install dependencies
+This writes 12 artifacts to `data/model_artifacts/` — per encoder:
+`pytorch_<enc>.pt`, `tensorflow_<enc>.keras`, and `manual_<enc>.npz`.
+
+## 2. How the encoders stay small
+
+The pretrained encoders are gigabytes. `encoder.py` downloads each one, **trims it to our
+dataset's vocabulary in memory, and saves only the small copy** (`data/text_encoder_small/`,
+a few MB each) — the full files are never written to disk. BERT (`bert-base-uncased`) loads
+straight from HuggingFace at runtime. So the repo only commits the small encoders + the
+trained models; the full encoders and intermediate embeddings stay out of git.
+
+## 3. Run the app locally
+
+Two terminals, backend first:
+
+```bash
+# Terminal 1 — backend
+cd code/backend
+pip install -r requirements.txt          # fastapi + uvicorn (ML deps from the project venv)
+uvicorn app:app --reload --port 8000
+
+# Terminal 2 — frontend
+cd frontend
+npm install
+npm run dev                              # open http://localhost:5173
+```
+
+The backend warms up all encoders + models on startup; the Vite dev server proxies
+`/api/*` to it. Type a review, hit **Analyze sentiment**, and compare the models.
+
+## Deploying (Streamlit + CI/CD)
+
+The repo ships a Streamlit front end (`streamlit_app.py`) that reuses the same prediction
+core as the FastAPI backend — `backend/predictor.py` has no web framework in it, so both
+import it directly. Because the committed encoders are small and the artifacts are in the
+repo, the app deploys from a normal GitHub clone with **no large-file hosting**.
+
+**Try it locally:**
+
+```bash
 pip install -r requirements.txt
-
-# register the environment as a Jupyter kernel (optional)
-python -m ipykernel install --user --name=rnn-env --display-name="Python (rnn-env)"
+streamlit run streamlit_app.py            # http://localhost:8501
 ```
 
-> The notebook downloads pre-trained embeddings/models (GloVe via `gensim.downloader`,
-> BERT via `transformers`) on first run, so the first execution needs an internet
-> connection and some disk space.
+**Deploy to Streamlit Community Cloud (this is the CD):**
 
-## Usage
+1. Push this repo to GitHub.
+2. On [share.streamlit.io](https://share.streamlit.io) → **New app** → pick the repo/branch
+   and set **Main file path** = `streamlit_app.py`.
+3. Deploy. From then on **every push to the branch auto-redeploys** the app — that's the
+   continuous-delivery half, handled by Streamlit Cloud (no deploy keys needed).
 
-Open the notebook for the full walkthrough:
+**CI (the gate before deploy):** [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+runs on every push/PR — it byte-compiles the code and verifies the committed model
+artifacts the app needs are actually present, so a broken commit fails CI instead of
+shipping a broken app.
 
-```bash
-jupyter notebook rnn_building_scratch.ipynb
-```
+**Fitting the free-tier memory budget.** Loading PyTorch + TensorFlow + BERT at once
+exceeds Streamlit's free tier, so the deploy trims what it loads via env vars (set at the
+top of `streamlit_app.py`, overridable in Streamlit **Settings → Secrets**):
 
-Or use the modules directly — character-level example:
+| Variable | Default (deploy) | Effect |
+|---|---|---|
+| `VRNN_ENCODERS` | `word2vec,fasttext,glove` | skips BERT (the ~400 MB transformer) |
+| `VRNN_FRAMEWORKS` | `pytorch,tensorflow,manual` | which models to run |
 
-```python
-from rnn_scratch_multi_layer import RNN
-from utils import generate_dataset, train_test_split, evaluate, predict_next, generate
-
-text = "your training corpus here ..."
-
-# build one-hot character sequences, then split into train/test
-X, Y, char_to_index, index_to_char = generate_dataset(
-    text, T_x=10, is_char=True, word_vectors=[], seq_length=25
-)
-X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2)
-
-# train a stacked RNN (hidden_layers sets the number and size of layers)
-model = RNN(X_train, Y_train, hidden_layers=(50,), learning_rate=0.001, iterations=1000)
-model.train()
-
-# evaluate + generate
-print("test accuracy:", evaluate(model, X_test, Y_test))
-print(predict_next(model, char_to_index, index_to_char, seed_word="M", is_char=True))
-print(generate(model, char_to_index, index_to_char, seed_word="A", num_words=100, is_char=True))
-```
-
-Word-level example (using gensim word vectors as the encoder):
-
-```python
-from gensim.models import Word2Vec
-
-sentences = [s.split() for s in corpus_lines]
-words = [w for s in sentences for w in s]
-w2v = Word2Vec(sentences, vector_size=100, window=5, min_count=1, sg=1).wv
-
-X, Y, vocab_to_index, index_to_vocab = generate_dataset(words, T_x=5, is_char=False, word_vectors=w2v)
-X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2)
-
-model = RNN(X_train, Y_train, hidden_layers=(100, 64), learning_rate=0.01, iterations=2000, task="classification")
-model.train()
-
-print(predict_next(model, w2v, index_to_vocab, "Machine"))
-print(generate(model, w2v, index_to_vocab, seed_word="Machine", num_words=10, sample=True))
-```
-
-Compare all three implementations on the same data:
-
-```python
-from rnn_scratch_multi_layer import RNN
-from rnn_tensorflow import KerasRNN
-from rnn_pytorch import TorchRNN
-from compare import compare_models
-
-cfg = dict(hidden_layers=(50,), learning_rate=0.001, iterations=1000, task="classification")
-models = {
-    "manual (numpy)": RNN(X_train, Y_train, **cfg),
-    "tensorflow":     KerasRNN(X_train, Y_train, **cfg),
-    "pytorch":        TorchRNN(X_train, Y_train, **cfg),
-}
-for m in models.values():
-    m.train()
-
-# train/test accuracy table + a sample generation from each model
-compare_models(models, X_train, Y_train, X_test, Y_test,
-               embedding=char_to_index, decoder=index_to_char,
-               seed_word="M", is_char=True, num_gen=100)
-```
-
-
+Imports are lazy, so a skipped piece is never loaded (and `transformers` isn't even needed
+when BERT is off — it's in `requirements-dev.txt`, not the deploy `requirements.txt`). If
+the app still OOMs, set `VRNN_FRAMEWORKS=pytorch,manual` in Secrets to drop TensorFlow — no
+code change required.
 
 ---
 
