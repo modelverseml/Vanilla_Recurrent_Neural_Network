@@ -409,19 +409,20 @@ runs on every push/PR — it byte-compiles the code and verifies the committed m
 artifacts the app needs are actually present, so a broken commit fails CI instead of
 shipping a broken app.
 
-**Fitting the free-tier memory budget.** Loading PyTorch + TensorFlow + BERT at once
-exceeds Streamlit's free tier, so the deploy trims what it loads via env vars (set at the
-top of `streamlit_app.py`, overridable in Streamlit **Settings → Secrets**):
+**Fitting the free tier.** TensorFlow has no wheels on Streamlit's default Python and,
+with BERT, blows the memory budget — so the deploy runs a lean set and pins Python via
+[`.python-version`](.python-version) (`3.11`) so the ML wheels resolve. What loads is
+chosen by env vars (set at the top of `streamlit_app.py`, overridable in Streamlit
+**Settings → Secrets**):
 
 | Variable | Default (deploy) | Effect |
 |---|---|---|
+| `VRNN_FRAMEWORKS` | `pytorch,manual` | PyTorch + from-scratch NumPy (TensorFlow off) |
 | `VRNN_ENCODERS` | `word2vec,fasttext,glove` | skips BERT (the ~400 MB transformer) |
-| `VRNN_FRAMEWORKS` | `pytorch,tensorflow,manual` | which models to run |
 
-Imports are lazy, so a skipped piece is never loaded (and `transformers` isn't even needed
-when BERT is off — it's in `requirements-dev.txt`, not the deploy `requirements.txt`). If
-the app still OOMs, set `VRNN_FRAMEWORKS=pytorch,manual` in Secrets to drop TensorFlow — no
-code change required.
+Imports are lazy, so a skipped piece is never installed/loaded. To re-enable a model on
+the deploy, set the env var in Secrets **and** add its dependency to `requirements.txt`
+(`tensorflow` for the TF model, `transformers` for BERT — both are in `requirements-dev.txt`).
 
 ---
 

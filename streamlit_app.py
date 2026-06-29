@@ -4,14 +4,15 @@ Streamlit front-end for the Vanilla-RNN sentiment app (Streamlit Cloud entry poi
 It reuses the exact same prediction core as the FastAPI backend
 (code/backend/predictor.py) -- one review in, every model's prediction out.
 
-To keep memory within Streamlit Community Cloud's free tier we skip BERT here by
-default (the heaviest single model: a ~400MB transformer downloaded at runtime).
-PyTorch, TensorFlow and the from-scratch NumPy RNN still run across the three
-static encoders (word2vec / fastText / GloVe) = 9 models.
+For the cloud deploy we run the lightweight set that actually fits the free tier
+and installs cleanly: PyTorch + the from-scratch NumPy RNN, across the three
+static encoders (word2vec / fastText / GloVe) = 6 models. TensorFlow is dropped
+on deploy (its wheels are huge and unavailable on Streamlit's Python), and BERT
+is skipped (a ~400MB transformer downloaded at runtime). Both still run locally.
 
-Tune via env vars / Streamlit secrets:
-  - run everything (incl. bert): VRNN_ENCODERS=word2vec,fasttext,glove,bert
-  - if TensorFlow blows the memory budget: VRNN_FRAMEWORKS=pytorch,manual
+Tune via env vars / Streamlit secrets (Settings -> Secrets):
+  - add bert:        VRNN_ENCODERS=word2vec,fasttext,glove,bert  (needs transformers)
+  - add tensorflow:  VRNN_FRAMEWORKS=pytorch,tensorflow,manual   (needs tensorflow)
 """
 
 import os
@@ -19,10 +20,9 @@ import sys
 from pathlib import Path
 
 # choose which models run BEFORE importing predictor (it reads these at import).
-# default: skip bert (the heaviest model) so the cloud deploy fits in memory;
-# keep all three frameworks across the light static encoders.
+# default = the lean set that deploys reliably; override via Streamlit Secrets.
 os.environ.setdefault("VRNN_ENCODERS", "word2vec,fasttext,glove")
-os.environ.setdefault("VRNN_FRAMEWORKS", "pytorch,tensorflow,manual")
+os.environ.setdefault("VRNN_FRAMEWORKS", "pytorch,manual")
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "code" / "backend"))
@@ -70,8 +70,8 @@ st.set_page_config(page_title="Vanilla-RNN Sentiment", page_icon="🧠", layout=
 
 st.title("Vanilla-RNN Sentiment")
 st.caption(
-    "One review, multiple embeddings × three implementations of the same vanilla "
-    "RNN (from scratch in NumPy, PyTorch, and TensorFlow). See how they compare."
+    "One review, multiple embeddings × implementations of the same vanilla RNN "
+    "(from scratch in NumPy, plus PyTorch). See how they compare."
 )
 
 # keep the chosen sample text across reruns

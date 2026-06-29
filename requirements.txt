@@ -1,10 +1,11 @@
 # Dependencies for the DEPLOYED Streamlit app (Streamlit Community Cloud reads
-# this file). The deploy skips BERT (see streamlit_app.py: VRNN_ENCODERS), so
-# `transformers` is NOT needed here -- it lives in requirements-dev.txt instead.
-# The app runs PyTorch + TensorFlow + the from-scratch NumPy RNN across the three
-# static encoders (word2vec / fastText / GloVe).
+# this file). It runs the lightweight set that fits the free tier: PyTorch + the
+# from-scratch NumPy RNN across the static encoders.
 #
-# For the full local pipeline (incl. BERT and the notebooks) use requirements-dev.txt.
+# Intentionally NOT here:
+#   - tensorflow / keras : heaviest dep, and no wheels on Streamlit's Python
+#   - transformers       : only needed for BERT, which the deploy skips
+# Both live in requirements-dev.txt for the full local pipeline.
 
 streamlit
 numpy
@@ -15,6 +16,3 @@ gensim
 # CPU-only PyTorch keeps the build small (no multi-GB CUDA wheels)
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
-
-tensorflow
-keras
